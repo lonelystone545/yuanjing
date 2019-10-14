@@ -1,0 +1,22 @@
+
+
+实现方案
+每个broker启动时，会在zk上注册临时节点（hostname，ip），同时在本地维护一个其他broker ip的集合。
+每个broker要与其他broker建立一个Mqtt连接，维护一个map集合，key是broker ip，value是mqttclient。
+
+重写各个接口，在发送请求的部分，改为使用mqttclient发送message，message内容为clientID，订阅该topic的broker（包含自身），
+会查看clientID是否连接在自身的broker上，如果有，则剔除，并且通过channel回送response消息，如果没有，则直接回复response消息。
+这个response消息带有特殊标示符，接收的broker会进行判断，是否为该response消息。
+
+message消息的内容不需要带有ip，channel可以标识另外一个broker么？
+
+每个broker订阅topic：/newConn
+
+
+
+
+  
+1 ServiceRegister的子节点增加和删除事件中新增代码   需要同步么，删除时需要断开么
+2 新增BetweenClient类    请教蔡爷
+3 新增ConnectionDesc中的方法closeIfExists2方法
+4 新增ReservedTopic中的topic

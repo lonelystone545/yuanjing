@@ -1,0 +1,42 @@
+﻿create table site_info (
+	id int(11) not null,
+	siteId varchar(255),
+	siteName varchar(255),
+	primary key (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+create table monitor_info (
+	id int(11) not null auto_increment,
+	deviceId varchar(255),
+	pointId varchar(255),
+	overTime bigint(20),
+	status enum('0','1','2','3','4','5'),
+	time bigint(20),
+	siteId varchar(255),
+	primary key (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+create table device_info (
+	id int(11) not null auto_increment,
+	deviceId varchar(255),
+	content text,
+	time bigint(20),
+	siteId varchar(255),
+	primary key (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+
+select (pointId,overTime,status,siteId) from monitor_info where siteId = '17dbd6a82e43e000' and time = 1501588440001 and (status = '1' or status = '3');
+
+
+
+与应用相关的，数据可获取 可逻辑比较。不关心接口是好的还是坏的，只关心接口中能否拿到数据或者数据的正确与否
+具体的接口具体分析（有的接口本身就不会获取到数据）
+
+盒子项目监控  执行诊断的过程（脚本，可手动操作）
+
+实时数据  时间差10分钟  以场站为维度
+
+光伏 晚上告警 白天不告警 时间黑名单
+
+

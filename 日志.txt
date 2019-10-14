@@ -1,0 +1,121 @@
+20170703
+安装环境jdk7 eclipse mars  svn
+TAPD   https://www.tapd.cn/ptlogins/login 用户名yuan.wang2@envisioncn.com  密码wydgyy027838！
+EOS   http://wiki.envisioncn.com/login.action  用户名yuan.wang2  密码wydgyy027838!
+
+20170704
+布置任务了，了解一下架构，看看kafka。
+spark代码真心看不懂，坐等星爷教我了。
+
+20170705
+在烨哥的帮助下获取到数据了，有重点的看代码，而不是全部都懂，等后面有时间再去细看代码。
+简单的数据处理。
+
+20170706
+20170707
+
+20170710
+FluentIterable.from(tmps).transform(new Function<CIMInstance, String>() {
+
+							@Override
+							public String apply(CIMInstance input) {
+								return input.getObjectID();
+							}
+							
+						}).toList();
+
+已完成基本的功能：数据长时间不变化和没有收到数据进行报警
+						
+下一步的任务：
+1 周报的功能
+
+2 将消息发回kafka进行报警（如果有消息，一小时发送一次？？）
+	<dependency>
+			<groupId>com.envision.eos</groupId>
+			<artifactId>eos_alert_service_share</artifactId>
+			<version>0.0.2</version>
+		</dependency>
+	创建kafka的producer，往LionUtil.getStringValue("config-manager.EOS_ALERT_NOTIFY", "EOS_ALERT_NOTIFY")发数据  
+	AlertMsg的json格式
+	alertmsg的content在数据库里不超过1024个字节，这里需要对内容进行一个分段。不能过长，否则不能触发报警。（坑）
+	
+3 参数可配置（模糊匹配和精确匹配）设置白名单，将某些点过滤
+从lion中取出配置，进行字符串分割，然后按照正则表达式进行拼接，这里如果是对id进行配置，则在cim模块取出数据之后，就进行过滤。
+如果是对point进行配置，只有从redis中取出数据之后，才能进行过滤。
+领域点大约在2000个左右，而且长度不长。经过正则匹配之后，将符合过滤的点放在set集合中，这样下次在匹配的时候，先判断是否在set集合
+中，如果不在，再进行正则匹配。这样效率上有一定的提升。
+（当做某项操作比较费时时，可以把操作的结果保存起来，以便下次使用）
+
+4 分布式的考虑
+在执行任务开始时，会先向zookeeper中创建一个属于自己的节点（编号从0开始，如果0已经存在，则创建1），延迟一段时间然后获取
+总的机器数量。
+
+问题：如果在不同机器上的应用不是同时启动，怎么处理？（当两个服务器在执行任务期间又有一个服务器加入进来，可以获取
+
+
+20170711
+新的任务：研究mqtt_broker中的io.moquette.spi.persistence中的三个持久化类，三个类之间的关系，以及怎么被外部模块调用
+搞清楚是如何存储的，这样我们在把数据存储在redis中时，可以借鉴他的格式进行存储，或者自己实现一个格式。
+20170712
+20170713
+调研mapdb的性能，能不能做成一个单独的服务
+ctrl+shift+o点击某个方法可以查看方法的调用
+
+20170719
+布置了新的任务，见tapd
+
+基本完成了分布式的方案（zk这里还是需要详细了解一下）（分布式锁，leader选举原理）
+注意点：1 对于分布式系统来说，考虑要更加全面，比如读和写要分开，否则会重复覆盖
+	2 关键的地方要记得打log
+	3 zk如果上线有问题，就改为用定时器来做，不采用watcher
+	4 在涉及一些调用其他服务时，需要对获取的结果进行判断，是异常还是空
+	5 在一些服务不可用时，不能影响本地服务的处理（比如redis）
+
+设计优化： 1 在获取主数据时，并不是获取全量数据，这样减轻了CIM读取的压力
+	   2 应用程序启动时，设计一个随机延迟的时间，避免高峰，减少压力
+           3 在进行模糊匹配时，考虑到正则匹配因为有回溯比较慢，这里设置了set集合缓存，加快速度
+	   4 任务启动时，从redis中读取之前正则缓存的集合，同时会比较配置有没有发生变化，如果有发生变化，则再比较发生之后的配置是否
+包含了之前的配置，如果包含，则可以继续使用之前的缓存集合，如果不包含，则需要进行重新进行缓存，在处理结束之后，需要将缓存
+存储到redis中，以备下次使用。
+
+
+存在的问题：如果一个节点挂了，在zk端不是立即删除这个节点的，然后这个节点立即重启，创建节点，会提示节点已经存在，报异常。
+然后zk端会删除该节点，这个时候就会出现重启之后的节点在zk上是没有对应的节点存在的，id重复。
+
+解决方案：1 应用在启动时，会随机延时一段时间，这样既可以错峰，也可以等zk端删除节点之后再去创建节点
+	  2 捕获创建节点异常，然后延迟一段时间重新创建。（这里异常无法捕获，不知道是什么原因）
+
+
+20170724
+stream_sub_transfer 
+StreamingListener接口
+
+
+select group: energyos
+mkdir yuan.wang2
+cd yuan.wang2
+rz (上传jar包)
+以energy-os为例，拷贝其中的conf lib bin和log目录，并修改bin中的start.sh
+
+
+实时-dashboard-业务大盘-energy-os
+配置-项目配置信息-
+
+ 1191  vi bin/cleanCheckPoint.sh 
+ 1192  hadoop fs -ls /user/eos/spark/checkpoint/EOS-SPARK-STREAM_SUB_TRANSFER-BETA
+ 1193  sh bin/killjob_yarn.sh 
+ 1194  vi bin/cleanCheckPoint.sh 
+ 1195  sh bin/submit_yarn.sh 
+ 1196  tailf log/spark.log 
+
+
+20170726
+观察到老年代内存是不断增长的，说明大内存的对象有很多，最终会触发full gc。（一天两次，可以忍受）
+代码优化：程序中使用了一个Map集合，这个集合很大，在用完之后要记得clear清空。
+再次观察垃圾回收：
+
+
+数据库相关：（项目 eos alert service)
+https://sgw.envisioncn.com
+EOS-环境配置相关-国内环境-monitor db主库
+awceosprdmonitormq01.cw1zsttpjvrr.rds.cn-north-1.amazonaws.com.cn

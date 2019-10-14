@@ -1,0 +1,387 @@
+为什么使用消息队列？
+1 解耦  消息队列在处理过程中插入了一个隐含的 基于数据的接口层，两边的处理过程都要实现这个接口。这允许两端可以独立的扩展或者修改
+        两端的处理过程，只要确保它们遵守同样的接口约束。（发布-订阅关系）
+2 冗余 消息队列可以对数据进行持久化直至它们已经被完全处理。对消息队列中的数据可以设置过期数据删除策略。
+3 扩展性 消息队列解耦了处理过程，故可以增大消息入队和处理的频率很同意。
+4 可恢复性 消息队列降低了进程之间的耦合度，即使一个处理消息的进程挂掉了，加入队列的消息仍然可以在系统恢复后被处理。
+5 顺序保证 
+6 缓冲 消息队列通过一个缓冲层来帮助任务最高效率的执行，写入队列的处理会尽可能的快，而不受从队列读的预备处理的约束。该缓冲有助于
+       控制和优化数据流经过系统的速度。
+7 异步通信 消息队列提供了异步处理的机制，允许把一个消息放入队列，但并不立即处理。
+
+
+消息队列中消息的顺序保证？
+顺序消费也就是说producer依次发送消息1 2 3，consumer按顺序1 2 3进行消费。但是在缺省情况下，消息队列都不会保证消息的严格有序消费
+发送端：
+	发送端不能异步发送消息。因为在发送失败时，就无法保证消息顺序。比如连续发了1 2 3，然后返回结果1失败，2 3成功，这时再重新发送1，
+	顺序已经乱了。
+存储端：
+	要保证消息顺序，要求：1 消息不能分区。也就是说1个topic只能有1个队列。在kafka中，叫做partition，在rocketmq中，叫做queue。
+	如果有多个队列，那么同一个topic消息，会分散到多个分区中，无法保证顺序。 2 即使只有一个队列，那么该节点挂了，能否切换到其他
+	节点上？也就是高可用问题。比如当前节点挂了，队列中的消息没有消费完，此时切换到其他节点上，可用性保证了，但是消息顺序乱了。
+	要想保证顺序，必须同步复制，而不是异步复制。
+接收端：
+	对于接收端，不能并行消费，也就是说不能采用多线程或者多个客户端消费同一个队列。
+在实际中，1 不关注顺序的业务大量存在  2 队列无序不代表消息无序，也就是说，不保证队列的全局有序，保证消息的局部有序。kafka在发送消息时，
+可以指定（topic partition key）3个参数，partition和key可选。如果指定了partition，那么所有发往同一个partition消息是有序的，并且在消费端，
+kafka保证1个partition只能被1个consumer消费（同一个consumer group）。或者指定消息的key，具有相同key的消息会被发送到同一个partition中，
+也是有序的。
+
+
+kafka为什么比其他消息系统快？
+kafka将消息存储在磁盘中，不要以为在磁盘上读写数据会降低性能，因为寻址比较耗费时间。但是实际上磁盘读写的快慢取决于怎么使用，是
+顺序读写还是随机读写。
+1 kafka操作的是序列文件IO（序列文件特征是按顺序写，按顺序读），为了保证顺序，kafka强制点对点的按顺序传递消息，这意味着一个consumer
+在消息流（或分区）中只有一个位置
+2 kafka不保存消息状态，即消息是否被消费。一般的消息系统需要保存消息的状态，并且需要以随机访问的形式更新消息的状态。而kafka是保存
+consumer在topic分区中的位置offset，在offset之前的消息是已经被消费的，在offset之后的消息是未被消费的，并且offset可以任意移动，这
+就消除了大部分的随机IO
+3 kafka支持点对点的批量消息传递
+4 kafka的消息存储在OS pagecache（页缓存，page cache的大小为一页，通常为4k，在linux读写文件时，它用于缓存文件的逻辑内容，从而加快
+对磁盘上映像和数据的访问）(linux会把所有未使用的内存作为pagecache)(OS缓存是假设开发者的io操作是顺序读而不是随机读去缓存的，应用层面的
+缓存，这样可以根据自己的业务逻辑决定缓存哪些数据，热点数据等）
+
+
+
+
+kafka过期数据的处理
+1 删除 配置log.retention.policy=delete启动删除策略。
+	清理超过指定时间的数据。
+	清理超过指定大小的数据。
+  为了避免在删除时阻塞读，采用了copy-on-write形式实现，删除操作进行时，读取操作的二分查找功能实际上是在一个静态的快照副本上进行的。
+2 压缩 将数据压缩，只保留每个key最后一个版本的数据。
+	压缩时将根据key的消息进行聚合，只会保留最后一次出现的数据，也就是最新的数据。压缩后的offset可能是不连续的，因为丢失的offset的消息被
+	合并了，当从这些offset消费时，将会拿到比这个offset大的offset对应的消息，然后从这个位置开始消费。
+  这种策略适合特定场景，比如key是用户id，消息体是用户的资料，通过这种压缩策略，整个消息就保存了所有用户最新的资料。
+  
+ 
+kafka partition的分发策略
+kafka producer可以通过分发策略将消息分发给指定的partition。kafka java客户端有默认的partitioner。首先会获取topic的所有partition，
+如果客户端不指定partition，也没有指定key，则使用自增长的数字取余的方式实现指定的partition。这样kafka将平均的向partition中生产数据。
+如果想指定partition，一种是指定partition，另一种是根据key写算法实现，需要实现Partitioner接口，实现partition方法。
+常用的就是key hash或者轮询调度（依次将请求调度到不同的服务器上）
+
+
+kafka中系统的角色：
+broker：一台kafka服务器就是一个broker，一个集群由多个broker组成
+Kafka中使用Broker来接受Producer和Consumer的请求，并把Message持久化到本地磁盘。每个Cluster当中会选举出一个Broker来担任Controller，
+负责处理Partition的Leader选举，协调Partition迁移等工作。
+topic：每条消息都需要有一个topic
+partition：分区，每个分区是一个有序的队列。就是一个文件。一个topic可以有多个partition，partition中每条消息都会有一个有序的id（offset）
+segment：partition物理上由多个segment组成
+producer
+consumer
+consumergroup：消息系统有两类：广播和订阅发布。广播是把消息发给所有消费者，发布订阅是把消息发给特定的订阅者。kafka通过CG实现了
+这两种机制。一个topic可以有多个CG，topic的消息会复制到所有的CG，但是每个CG只会把消息发给该CG中的一个consumer。广播，只需要每个consumer有一个
+独立的CG，单播只需要所有consumer在同一个CG。consumers的负载均衡可以使用zk实现。
+replication：每个partition可以有多个replication。kafka集群在各个broker上备份topic分区中日志。当集群中某个broker出现故障，会自动切换
+这些副本，从而保证在故障时消息仍然可用。
+ISR(In-Sync Replica)：是Replicas的一个子集，表示目前Alive且与Leader能够“Catch-up”的Replicas集合。由于读写都是首先落到Leader上，所以一般来说通过同步机制
+从Leader上拉取数据的Replica都会和Leader有一些延迟(包括了延迟时间和延迟条数两个维度)，任意一个超过阈值都会把该Replica踢出ISR。每个Partition都有它自己独立的ISR。
+Leader：每个Replication集合中的Partition都会选出一个唯一的Leader，所有的读写请求都由Leader处理。其他Replicas从Leader处把数据更新同步到本地，过程类似大家熟悉的MySQL中的Binlog同步。
+
+节点存活？？？
+1 节点必须能维持与zk的会话（通过zk的心跳机制）
+2 如果节点是slave，必须能够复制leader并且不能落后太多。
+leader会跟踪同步节点（ISR)。如果一个follower死掉 卡了或者落后，leader就会将其从同步副本中移除。
+落后是通过replica.lag.max.messages配置控制，卡住是通过replica.lag.time.max.ms配置控制的。
+当所有同步副本 分区已经应用自己的日志，消息才被认为是 承诺，只有承诺的消息才会发送给消费者，这意味着消费者不必担心会看到如果leader
+失败可能丢失的消息。另一方面，生产者可以选择等待消息 已提交或者不等，可以通过生产者的request.required.acks进行配置。
+
+
+当kafka写入时，生产者可以选择是否等待0,1 或 全部副本（-1）的消息确认。需要注意的是“所有副本确认”并不能保证全部分配副本已收到消息。默认情况下，当acks=all时，
+只要当前所有在同步副本收到消息，就会进行确认。例如：如果一个topic有2个副本，并且一个故障（即，只剩下一个同步副本），即使写入是?acks=all?也将会成功。
+如果剩下的副本也故障了那么这些写入可能会丢失。虽然这可以确保分区的最大可用性，这种方式可能不受欢迎，一些用户喜欢耐久性超过可用性。因此，我们提供两种配置。
+
+
+
+选举？？？？
+kafka集群中的其中一个broker会被选举为controller。主要负责partition管理和副本状态的管理，也会执行类似于重分配partition之类的管理任务。
+如果controller宕掉，会从剩下的broker中重新选举出controller。
+一个partition有多个副本，为了保证较高的处理效率，消息的读写应该在固定的一个副本上完成。这个副本就是leader（由controller决定），而其他副本就是follower。
+follower会定期的到leader上同步数据。当leader出现问题后，需要从那些跟leader保持同步的follower中选举出新的leader。kafka会在zk上为
+每个topic维护一个ISR（in sync replica，同步的副本）集合。该集合中是分区的副本，这个集合中副本和leader是高度保持一致的，
+任何一条消息必须被这个集合中的每个节点读取并追加到日志中了，才会通知外部这个消息已经被提交了。
+如果ISR集合中某个副本同步过慢，则会将其从ISR集合中删除掉。
+只有副本跟leader同步之后，kafka才会认为消息已经提交，并反馈给消息的生产者。如果这个集合有增减，kafka会更新zk上的记录。如果某个分区的leader不可用，
+kafka就会从ISR集合中选择一个副本作为新的leader，通过ISR，kafka需要的冗余度比较低，可容忍的失败数比较高。假如某个topic有f+1个副本，kafka可用容忍f个节点不可用。
+如果采用少数服从多数的算法，也就是说只有超过半数的副本同步了，系统才会认为数据已经同步。选择leader时也是从超过半数的同步的副本中选择，这种算法需要较高的冗余度。
+3个副本只能允许1个节点失败，5个副本只能允许2个节点失败。如果ISR集合中的副本都失败了，一种是等待ISR集合中的副本复活，可以保证一致性，但是可能
+需要较长时间，一种是选择任何一个立即可用的副本，这个副本不一定在ISR集合中，但是可能导致副本不一致。
+优化leader的选举过程，一种比较麻烦的方案，leader将在运行中的所有分区中选举一个节点来托管。而在kafka中采用的是，选出一个broker
+作为controller，这个controller检查broker级别故障和负责改变所有故障的broker中的受影响的leader分区。优点是，可以批量处理多个需要
+leader变更的分区，这使得选举更廉价和迅速。如果controller发生故障，那么在幸存的broker中选出一个新的controller。
+
+
+导致分区中副本和leader不同步？？？
+慢副本：在一定周期时间内follower不能追赶上leader。常见原因是IO瓶颈导致follower追加复制消息速度慢于从leader中拉取得速度。
+卡主副本：在一定周期时间内follower停止从leader拉取请求。follower replica卡住是因为GC暂停或者follower死亡
+新启动副本：当用户给主题增加副本因子时，新的follower不在同步副本列表中，直至它们完全赶上了leader日志。
+
+
+zk与kafka：
+kafka将元数据信息保存在zk中，但是发送给topic本身的数据不会发到zk上。
+kafka使用zk实现动态的集群扩展，不需要更改客户端（producer和consumer）配置。broker会在zk注册并保持相关的元数据（topic partition等）更新。
+客户端会在zk上注册相关的watcher，一旦zk发生变化，客户端能及时感知并作出调整。这就保证了在broker之间自动实现负载均衡。
+broker使用zk来注册broker信息，以及监测partition leader存活性。
+consumer使用zk用来注册consumer信息，包括consumer消费的partition列表等。同时也可以用来发现broker列表，并和partition leader建立socket连接
+zk和producer没有建立联系，只和broker consumer建立关系以实现负载均衡。同一个CG中的consumers可以实现负载均衡。（producer是瞬态的，发送完就可以关闭，不需要等待）
+
+
+kafka的文件存储：
+1 topic中partition存储分布
+	同一个topic下可以有多个partition，每个partition位一个目录，partition的命名规则：topic名称+有序序号（序号从0开始）
+2 partition中文件存储方式
+	每个partition（目录）相当于一个巨型文件被平均分配到多个大小相等的segment（段）数据文件中。但是每个段segment file消息数量不一定相等，这种
+	特性方便old segment file快速被删除。每个partition只需要支持顺序读写，segment文件生命周期由服务端配置参数决定，这样做好处是
+	可以快速删除无用文件，有效提高磁盘利用率。
+3 partition中segment文件存储结构
+	segment file由两部分组成，分别为index file和data file。成对出现，后缀.index和.log。分别表示segment索引文件 数据文件。
+	segment命名规则：partition全局的第一个segment由0开始，后续每个segment文件名为上一个segment文件最后一条消息的offset值。
+	segment index是稀疏索引，有一个对应关系。通过index可以找到data中的消息。index文件中元数据指向对应数据文件中message的物理
+	偏移地址，在data中存储有物理偏移地址和对应的offset值。比如index中的3,1497依次在数据文件中表示第3个message以及该消息的物理偏移地址497.
+4 在partition中如何通过offset查找message
+	例如读取offset=368776的message，需要通过下面2个步骤查找。
+
+	第一步查找segment file
+	上述图2为例，其中00000000000000000000.index表示最开始的文件，起始偏移量(offset)为0.第二个文件00000000000000368769.index的消息量起始偏移量为368770 = 368769 + 1.
+	同样，第三个文件00000000000000737337.index的起始偏移量为737338=737337 + 1，其他后续文件依次类推，以起始偏移量命名并排序这些文件，只要根据offset **二分查找**文件
+	列表，就可以快速定位到具体文件。当offset=368776时定位到00000000000000368769.index|log
+	第二步通过segment file查找message
+	通过第一步定位到segment file，当offset=368776时，依次定位到00000000000000368769.index的元数据物理位置和00000000000000368769.log的物理偏移地址，
+	然后再通过00000000000000368769.log顺序查找直到offset=368776为止。
+	segment index file采取稀疏索引存储方式，它减少索引文件大小，通过mmap可以直接内存操作，稀疏索引为数据文件的每个对应message设置一个元数据指针,
+	它比稠密索引节省了更多的存储空间，但查找起来需要消耗更多的时间。
+
+
+	
+kafka数据的可靠性和一致性
+1.Partition Recovery机制
+	每个Partition会在磁盘记录一个RecoveryPoint, 记录已经flush到磁盘的最大offset。当broker fail 重启时,会进行loadLogs。 首先会读取该Partition的RecoveryPoint,
+	找到包含RecoveryPoint的segment及以后的segment, 这些segment就是可能没有 完全flush到磁盘segments。然后调用segment的recover,重新读取各个segment的msg,并重建索引
+	（从leader中拉取数据进行同步）
+	优点
+	1.以segment为单位管理Partition数据,方便数据生命周期的管理,删除过期数据简单
+	2.在程序崩溃重启时,加快recovery速度,只需恢复未完全flush到磁盘的segment
+	3.通过index中offset与物理偏移映射,用二分查找能快速定位msg,并且通过分多个Segment,每个index文件很小,查找速度更快。
+2.Partition Replica同步机制
+	1.Partition的多个replica中一个为Leader,其余为follower
+	2.Producer只与Leader交互,把数据写入到Leader中
+	3.Followers从Leader中拉取数据进行数据同步
+	4.Consumer只从Leader拉取数据
+	ISR:所有不落后的replica集合, 不落后有两层含义:距离上次FetchRequest的时间不大于某一个值或落后的消息数不大于某一个值, Leader失败后会从ISR中选取一个Follower
+	做Leader
+3.数据可靠性保证
+	当Producer向Leader发送数据时,可以通过acks参数设置数据可靠性的级别
+	1.0: 不论写入是否成功,server不需要给Producer发送Response,如果发生异常,server会终止连接,触发Producer更新meta数据;
+	2.1: Leader写入成功后即发送Response,此种情况如果Leader fail,会丢失数据
+	3.-1: 等待所有ISR接收到消息后再给Producer发送Response,这是最强保证 
+	仅设置acks=-1也不能保证数据不丢失,当Isr列表中只有Leader时,同样有可能造成数据丢失。要保证数据不丢除了设置acks=-1, 还要保 证ISR的大小大于等于2,具体参数设置:
+	1.request.required.acks:设置为-1 等待所有ISR列表中的Replica接收到消息后采算写成功;
+	2.min.insync.replicas: 设置为大于等于2,保证ISR中至少有两个Replica 
+	Producer要在吞吐率和数据可靠性之间做一个权衡
+4.数据一致性保证
+	一致性定义:若某条消息对Consumer可见,那么即使Leader宕机了,在新Leader上数据依然可以被读到
+	1.HighWaterMark简称HW: Partition的高水位，取一个partition对应的ISR中最小的LEO作为HW，消费者最多只能消费到HW所在的位置，另外每个replica都
+	有highWatermark，leader和follower各自负责更新自己的highWatermark状态，highWatermark <= leader. LogEndOffset
+	2.对于Leader新写入的msg，Consumer不能立刻消费，Leader会等待该消息被所有ISR中的replica同步后,更新HW,此时该消息才能被Consumer消费，
+	即Consumer最多只能消费到HW位置这样就保证了如果Leader Broker失效,该消息仍然可以从新选举的Leader中获取。对于来自内部Broker的读取请求,没有HW的限制。
+	同时,Follower也会维护一份自己的HW,Folloer.HW = min(Leader.HW, Follower.offset)
+
+	
+
+kafka和rabbitmq区别：
+1 rabbitmq实现了aqmp协议，almp协议定义了消息路由规则和方式，生产端通过路由规则发送消息到不同的queue，消费端根据queue名消费
+消息。rabbitmq是向消费端推送消息，订阅关系和消费状态保存在服务端。
+rabbitmq支持内存队列和持久化队列，消费端为推模型，消费状态和订阅关系由服务端负责维护，消息消费完后立即删除，不保留历史消息。（这样，可以避免重复消费消息，且
+保持队列的长度比较短，提高效率）所以支持多订阅时，消息会多个拷贝。
+2 kafka只支持消息持久化，消费端为拉模型，消费状态和订阅关系由客户端负责维护，消息消费完后不会立即删除，会保留历史消息。
+因此支持多订阅时，消息只会存储一份。	
+	
+
+如果kafka在消费消息时，消费一条数据比较耗时，且在短时间内，producer会产生大量数据丢进kafka中，导致consumer在session.timeout.ms时间内
+没有消费完成，consumer coordinator会由于没有接收到心跳而挂掉，然后自动提交offset失败，然后重新分配partition给客户端，由于自动提交
+offset失败，导致重新分配了partition的客户端又重新消费之前的一批数据，然后consumer又重新消费，又出现消费超时，无限循环下去。
+（大消息会让GC时间变长，因为broker需要分配更大的块。长时间GC会导致kafka丢失zk会话，则需要配置zookeeper.session.timeout.ms参数为更大的超时时间。
+解决方案：
+1 提高partition数量，从而提高了consumer的并行能力，从而提高了数据的消费能力
+2 对于单partition的消费线程，增加了一个固定长度的阻塞队列和工作线程池进一步提高并行消费的能力
+3 将发送的大消息进行分片处理，同时使用分区主键保证一个大消息的所有部分都会被发送到同一个kafka分区，这样在消费时会将这些部分重新还原为原始消息。
+4 使用共享存储，可以把这些大的文件存在共享存储，然后使用kafka来传送文件的位置信息
+5 在生产端进行压缩消息
+6 或者修改broker配置
+message.max.bytes (默认:1000000) – broker能接收消息的最大字节数，这个值应该比消费端的fetch.message.max.bytes更小才对，否则broker就会因为消费端无法使用这个消息而挂起。
+log.segment.bytes (默认: 1GB) – kafka数据文件的大小，确保这个数值大于一个消息的长度。一般说来使用默认值即可（一般一个消息很难大于1G，因为这是一个消息系统，而不是文件系统）。
+replica.fetch.max.bytes (默认: 1MB) – broker可复制的消息的最大字节数。这个值应该比message.max.bytes大，否则broker会接收此消息，但无法将此消息复制出去，从而造成数据丢失。
+  修改consumer配置
+  fetch.message.max.bytes (默认 1MB) – 消费者能读取的最大消息。这个值应该大于或等于message.max.bytes。所以，如果你一定要选择kafka来传送大的消息，还有些事项需要考虑。要传送大的消息，
+  不是当出现问题之后再来考虑如何解决，而是在一开始设计的时候，就要考虑到大消息对集群和主题的影响。
+  
+6 由于使用spring-kafka，则把kafka-client的enable.auto.commit设置为false，表示禁止自动提交offset，因为之前就是自动提交失败，导致
+offset永远没更新，提供了多种提交策略：
+/**
+   * The ack mode to use when auto ack (in the configuration properties) is false.
+   * <ul>
+   * <li>RECORD: Ack after each record has been passed to the listener.</li>
+   * <li>BATCH: Ack after each batch of records received from the consumer has been
+   * passed to the listener</li>
+   * <li>TIME: Ack after this number of milliseconds; (should be greater than
+   * {@code #setPollTimeout(long) pollTimeout}.</li>
+   * <li>COUNT: Ack after at least this number of records have been received</li>
+   * <li>MANUAL: Listener is responsible for acking - use a
+   * {@link AcknowledgingMessageListener}.
+   * </ul>
+   */
+  private AbstractMessageListenerContainer.AckMode ackMode = AckMode.BATCH;
+
+这些策略保证了在一批消息没有完成消费的情况下，也能提交offset，从而避免了完全提交不上而导致永远重复消费的问题。
+上面可以看到，如果auto.commit关掉的话，spring-kafka会启动一个invoker，这个invoker的目的就是启动一个线程去消费数据，他消费的数据不是直接从kafka里面直接取的，那么他消费的数据从哪里来呢？他是从一个spring-kafka自己创建的阻塞队列里面取的。
+然后会进入一个循环，从源代码中可以看到如果auto.commit被关掉的话， 他会先把之前处理过的数据先进行提交offset，然后再去从kafka里面取数据。
+然后把取到的数据丢给上面提到的阻塞列队，由上面创建的线程去消费，并且如果阻塞队列满了导致取到的数据塞不进去的话，spring-kafka会调用kafka的pause方法，则consumer会停止从kafka里面继续再拿数据。
+接着spring-kafka还会处理一些异常的情况，比如失败之后是不是需要commit offset这样的逻辑。
+
+
+kafka consumer
+kafka保证同一个consumer group中只有一个consumer消费某条消息，实际上kafka保证的是
+稳定状态下每一个Consumer实例只会消费某一个或多个特定 Partition的数据，而某个Partition的数据
+只会被某一个特定的Consumer实例所消费。也就是说Kafka对消息的分配是以 Partition为单位分配的，
+而非以每一条消息作为分配单元。这样设计的劣势是无法保证同一个Consumer Group里的Consumer均匀消费数据，
+优势是每个Consumer不用都跟大量的Broker通信，减少通信开销，同时也降低了分配难度，实现也更简单。另外，
+因为同一个Partition里的数据是有序的，这种设计可以保证每个Partition里的数据可以被有序消费。
+
+Consumer Rebalance的算法如下：
+将目标Topic下的所有Partirtion排序，存于PT
+对某Consumer Group下所有Consumer排序，存于CG，第i个Consumer记为Ci
+N=size(PT)/size(CG)，向上取整
+解除Ci对原来分配的Partition的消费权（i从0开始）
+将第i*N到（i+1）*N?1个Partition分配给Ci
+
+目前，最新版（0.8.2.1）Kafka的Consumer Rebalance的控制策略是由每一个Consumer通过在Zookeeper上注册Watch完成的。
+每个Consumer被创建时会触发 Consumer Group的Rebalance，具体启动流程如下：
+High Level Consumer启动时将其ID注册到其Consumer Group下，在Zookeeper上的路径为/consumers/[consumer group]/ids/[consumer id]
+在/consumers/[consumer group]/ids上注册Watch
+在/brokers/ids上注册Watch
+如果Consumer通过Topic Filter创建消息流，则它会同时在/brokers/topics上也创建Watch
+强制自己在其Consumer Group内启动Rebalance流程
+在这种策略下，每一个Consumer或者Broker的增加或者减少都会触发 Consumer Rebalance。因为每个Consumer只负责调整自己所消费的Partition，
+为了保证整个Consumer Group的一致性，当一个Consumer触发了Rebalance时，该Consumer Group内的其它所有其它Consumer也应该同时触发Rebalance。
+该方式有如下缺陷：
+Herd effect
+任何Broker或者Consumer的增减都会触发所有的Consumer的Rebalance
+Split Brain
+每个Consumer分别单独通过Zookeeper判断哪些Broker和Consumer 宕机了，那么不同Consumer在同一时刻从Zookeeper“看”到的View就可能不一样，这是由Zookeeper的特性决定的，这就会造成不正确的Reblance尝试。
+调整结果不可控
+所有的Consumer都并不知道其它Consumer的Rebalance是否成功，这可能会导致Kafka工作在一个不正确的状态。
+
+根据Kafka社区wiki，Kafka作者正在考虑在还未发布的0.9.x版本中使用中心协调器(Coordinator)。大体思想是为所有Consumer Group的子集
+选举出一个Broker作为Coordinator，由它Watch Zookeeper，从而判断是否有Partition或者Consumer的增减，然后生成Rebalance命令，并检查是否
+这些Rebalance 在所有相关的Consumer中被执行成功，如果不成功则重试，若成功则认为此次Rebalance成功（这个过程跟Replication Controller非常类似）。
+中心Coordinator
+如上文所述，当前版本的High Level Consumer存在Herd Effect和Split Brain的问题。如果将失败探测和Rebalance的逻辑放到一个高可用的中心Coordinator，
+那么这两个问题即可解决。同时还可大大减少 Zookeeper的负载，有利于Kafka Broker的Scale Out。
+
+如何通过中心coordinator实现rebalance
+成功Rebalance的结果是，被订阅的所有Topic的每一个Partition将会被Consumer Group内的一个（有且仅有一个）Consumer拥有。
+每一个Broker将被选举为某些Consumer Group的Coordinator。某个Cosnumer Group的Coordinator负责在该Consumer Group的成员变化或者所订阅
+的Topic的Partititon变化时协调Rebalance操作。
+Consumer
+1) Consumer启动时，先向Broker列表中的任意一个Broker发送ConsumerMetadataRequest，并通过 ConsumerMetadataResponse
+获取它所在Group的Coordinator信息。ConsumerMetadataRequest 和ConsumerMetadataResponse的结构如下
+ConsumerMetadataRequest
+{
+  GroupId                => String
+}
+
+ConsumerMetadataResponse
+{
+  ErrorCode              => int16
+  Coordinator            => Broker
+}
+2）Consumer连接到Coordinator并发送 HeartbeatRequest，如果返回的HeartbeatResponse没有任何错误码，Consumer继续fetch数据。
+若其中包含 IllegalGeneration错误码，即说明Coordinator已经发起了Rebalance操作，此时Consumer停止fetch数据，commit offset，
+并发送JoinGroupRequest给它的Coordinator，并在JoinGroupResponse中获得它应该拥有的所有 Partition列表和它所属的Group的新的Generation ID。
+此时Rebalance完成，Consumer开始fetch数据。相应Request和Response结构如下
+HeartbeatRequest
+{
+  GroupId                => String
+  GroupGenerationId      => int32
+  ConsumerId             => String
+}
+
+HeartbeatResponse
+{
+  ErrorCode              => int16
+}
+
+JoinGroupRequest
+{
+  GroupId                     => String
+  SessionTimeout              => int32
+  Topics                      => [String]
+  ConsumerId                  => String
+  PartitionAssignmentStrategy => String
+}
+
+JoinGroupResponse
+{
+  ErrorCode              => int16
+  GroupGenerationId      => int32
+  ConsumerId             => String
+  PartitionsToOwn        => [TopicName [Partition]]
+}
+TopicName => String
+Partition => int32
+详细内容
+参考链接：http://www.infoq.com/cn/articles/kafka-analysis-part-4/
+
+
+
+kafka高性能的保证？？？
+从磁盘中读写：
+Sequence I/O: 600MB/s 
+Random I/O: 100KB/s
+通过只做Sequence I/O的限制，规避了磁盘访问速度低下对性能可能造成的影响。
+首先，Kafka重度依赖底层操作系统提供的PageCache功能。当上层有写操作时，操作系统只是将数据写入PageCache，同时标记Page属性为Dirty。当读操作发生时，先从PageCache中查找，如果发生缺页才进行磁盘调度，最终返回需要的数据。实际上PageCache是把尽可能多的空闲内存都当做了磁盘缓存来使用。同时如果有其他进程申请内存，回收PageCache的代价又很小，所以现代的OS都支持PageCache。
+使用PageCache功能同时可以避免在JVM内部缓存数据，JVM为我们提供了强大的GC能力，同时也引入了一些问题不适用与Kafka的设计。
+? 如果在Heap内管理缓存，JVM的GC线程会频繁扫描Heap空间，带来不必要的开销。如果Heap过大，执行一次Full GC对系统的可用性来说将是极大的挑战。
+? 所有在在JVM内的对象都不免带有一个Object Overhead(千万不可小视)，内存的有效空间利用率会因此降低。
+? 所有的In-Process Cache在OS中都有一份同样的PageCache。所以通过将缓存只放在PageCache，可以至少让可用缓存空间翻倍。
+? 如果Kafka重启，所有的In-Process Cache都会失效，而OS管理的PageCache依然可以继续使用。
+PageCache还只是第一步，Kafka为了进一步的优化性能还采用了Sendfile技术。在解释Sendfile之前，首先介绍一下传统的网络I/O操作流程，大体上分为以下4步。
+https://segmentfault.com/a/1190000003985468
+OS 从硬盘把数据读到内核区的PageCache。
+用户进程把数据从内核区Copy到用户区。
+然后用户进程再把数据写入到Socket，数据流入内核区的Socket Buffer上。
+OS 再把数据从Buffer中Copy到网卡的Buffer上，这样完成一次发送。
+整个过程共经历两次Context Switch，四次System Call。同一份数据在内核Buffer与用户Buffer之间重复拷贝，效率低下。其中2、3两步没有必要，完全可以直接在内核区完成数据拷贝。这也正是Sendfile所解决的问题，经过Sendfile优化后，整个I/O过程就变成了下面这个样子。
+Kafka的设计初衷是尽一切努力在内存中完成数据交换，无论是对外作为一整个消息系统，或是内部同底层操作系统的交互。如果Producer和Consumer之间生产和消费进度上配合得当，完全可以实现数据交换零I/O。这也就是我为什么说Kafka使用“硬盘”并没有带来过多性能损失的原因
+
+
+
+zk脑裂问题
+
+zk集群节点奇数：zk特性：当集群中宕掉的节点数少于一半时，集群可以正常对外提供服务，因此2n和2n-1的容错是一样的
+
+
+	
+邮件告警系统的设计：
+生产者将需要发送的消息发送到kafka消息队列中，在消费端会采用回调的方式处理这个消息，也就是说当有订阅的消息到来时，会触发某个动作。
+实现MessageCallBack接口，并重写onMessage方法，当收到消息时，会调用该方法，将消息存储到阻塞队列中。在该
+回调接口的构造方法中（只会实例化一次），单独开一个线程，用来从阻塞队列中取出消息，并对按照消息的主题进行分类（放在map中)，然后
+采用executor多线程将消息发送出去。阻塞队列的长度和线程池数量都是100000.这里要注意，之前是有大量消息发送时，可能会该接口压力太大，
+超过队列长度，订阅的消息存在丢失现象，除了增加队列长度，还采用了限流，RateLimiter，限制每秒最多发送200条消息。这里在发送消息的同时，会
+向数据库中写入消息，持久化，数据库每隔3天清理一次过期数据。
+RateLimiter是一个速率限制器，在可配置的速率下分配许可证。通过acquire方法阻塞直至获取到可用的许可证，一旦获取，不再需要释放许可证。
+RateLimiter使用的是一种令牌桶的流控算法，按照一定的频率往桶里扔令牌，线程拿到令牌后才能继续执行。Semaphore限制的是并发访问的数量而不是
+速率。
+应用：限制对资源的访问速率。或者希望以5kb/s的速率处理数据。（Guava库）
+
+
+
+去中心化：在分布式多节点系统中，每个节点都哟高度自治的特征。节点之间可以自由连接，形成新的连接单元。任何一个节点都可能成为阶段性的中心，但是
+不具备强制性的中心控制功能。节点与节点之间的影响，会通过网络而形成非线性因果关系。这种开放式 扁平化 平等性的系统现象或者结构，称为
+去中心化。
+去中心化不是不要中心，而是中心多元化，任何节点都可以成为中心，任何中心都不是永久的，是阶段性的，中心对每个节点不具备强制作用。比如微博，每个人
+都是一个可以去连接别人影响别人的节点，明星又是影响许多人的中心。节点可以自由选择中心，自由决定中心。
+中心化，是中心决定节点，节点必须依赖中心，节点离开中心就无法生存。
+去中心化，就是节点决定中心，中心必须依赖节点，中心离开节点就无法生存。
